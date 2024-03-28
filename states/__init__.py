@@ -3,8 +3,4 @@ from .townhall import Townhall
 from .buildings import Buildings
 from .units import Units
 from .citizens import Citizens
-from .campaign import Campaign
-from .market import Market
-from .finance import Finance
-from .clan import Clan
-from .contest import Contest
+from .territory import Territory

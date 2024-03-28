@@ -1,8 +1,11 @@
+import asyncio
+
 from aiogram import types, Dispatcher
 from aiogram.utils import exceptions
+from aiogram.dispatcher import DEFAULT_RATE_LIMIT
 from aiogram.dispatcher.handler import CancelHandler, current_handler
 from aiogram.dispatcher.middlewares import BaseMiddleware
-from aiogram.utils.exceptions import Throttled
+from aiogram.utils.exceptions import Throttled, MessageCantBeDeleted
 
 
 class ThrottlingMiddleware(BaseMiddleware):

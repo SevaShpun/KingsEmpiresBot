@@ -8,3 +8,4 @@ class Territory(StatesGroup):
     waiting_capture = State()
     lobby = State()
     riot = State()
+

@@ -1,42 +1,26 @@
-import copy
-from utils.db_api import tables
-from utils.misc.fill_in_list import fill_in_list
+from utils.classes import other
 
 
-class Purchase:
+class Transaction:
 
     @staticmethod
-    def buy(price: list, townhall: tables.TownHall) -> bool:
-
-        price = fill_in_list(price)
-        if townhall.money < price[0]:
+    def subtract_resources(price: list, townhall_table) -> bool:
+        if townhall_table.food < price[0]:
             return False
-        if townhall.stock < price[1]:
-            return False
-        if townhall.diamonds < price[2]:
+        if townhall_table.stock < price[1]:
             return False
         else:
-            townhall.money -= price[0]
-            townhall.stock -= price[1]
-            townhall.diamonds -= price[2]
+            townhall_table.food -= price[0]
+            townhall_table.stock -= price[1]
             return True
 
     @staticmethod
-    def get_dynamic_price(price: list, townhall: tables.TownHall) -> str:
+    def get_text_price(price: list):
         text = ""
-        emoji = ["💰", "⚒", "💎"]
-        price = fill_in_list(price)
+        emoji = list(other.ListEmojiResources)
 
-        price[0] -= townhall.money
-        price[1] -= townhall.stock
-        price[2] -= townhall.diamonds
-
-        for i in price:
-            if i < 0:
-                price[price.index(i)] = 0
-
-        for i in range(0, 2):
-            if price[i] > 0:
+        for i in range(0, 4):
+            if price[i] != 0:
                 text += "{} {}".format(price[i], emoji[i])
 
                 if price[-price.count(0)-1] != price[i]:
@@ -45,31 +29,25 @@ class Purchase:
         return text
 
     @staticmethod
-    def get_price(price: list) -> str:
-        text = ""
-        emoji = ["💰, ", "⚒", "💎"]
+    def get_max_create_num(price: list, townhall_table) -> int:
+        try:
+            if price[1] == 0:
+                food_max_num = int(townhall_table.food / price[0])
+                return food_max_num
 
-        price = fill_in_list(price)
-        for i in range(0, 3):
-            if price[i] != 0:
+            elif price[2] == 0:
+                food_max_num = int(townhall_table.food / price[0])
+                stock_max_num = int(townhall_table.stock / price[1])
 
-                text += "{} {}".format(price[i], emoji[i])
+                if food_max_num > stock_max_num:
+                    return stock_max_num
+                elif stock_max_num > food_max_num:
+                    return food_max_num
+                else:
+                    return 0
 
-        return text
+        except ZeroDivisionError:
+            return 0
 
-    @staticmethod
-    def get_max_create_num(price: list, townhall: tables.TownHall) -> int:
-        player_resources = [townhall.money, townhall.stock]
-        max_nums = []
 
-        for resource in player_resources:
-            index = player_resources.index(resource)
-            if resource == 0:
-                create_max = 0
-            else:
-                create_max = int(resource / price[index])
-            max_nums.append(create_max)
-        if max_nums[0] > max_nums[1]:
-            return max_nums[1]
-        else:
-            return max_nums[0]
+

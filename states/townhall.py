@@ -5,3 +5,5 @@ class Townhall(StatesGroup):
     menu = State()
     progress = State()
     citizens = State()
+
+

@@ -1,468 +1,407 @@
+import states
 import re
+import json
 import random
-import typing
 
 from loader import dp
+from data import config
 
 from aiogram import types
 from aiogram.dispatcher import FSMContext
-from aiogram import exceptions
 
 from utils.misc.read_file import read_txt_file
-from utils.classes.regexps import BuildingsRegexp
 from utils.db_api import tables, db_api
-from utils.models import ages, base, clan_building
-from utils.classes import kb_constructor, timer, transaction
+from utils.ages import ages_list, models
+from utils.classes import kb_constructor, timer
 
 import keyboards
 
 
-@dp.message_handler(state="*", commands="buildings")
-async def buildings_command_handler(message: types.Message, state: FSMContext):
+@dp.message_handler(chat_id=config.ADMIN, state="*", commands="buildings")
+async def buildings_handler(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    session = db_api.CreateSession()
 
-    buildings: tables.Buildings = session.filter_by_user_id(
-        user_id=user_id, table=tables.Buildings)
+    session = db_api.Session(user_id=user_id)
+    session.open_session()
 
-    timer.BuildingTimer().get_build_timer(user_id=user_id)
+    # tables data
+    townhall_table: tables.TownHall = session.built_in_query(tables.TownHall)
+    age = townhall_table.age
 
-    keyboard = kb_constructor.PaginationKeyboard(
-        user_id=user_id).create_buildings_keyboard()
+    keyboard = kb_constructor.StandardKeyboard(
+        user_id=user_id
+    )
+    keyboard = keyboard.create_buildings_keyboard(age)
 
-    msg_text = read_txt_file("text/buildings/buildings")
     buildings_msg = await message.answer(
-        text=msg_text.format(
-            buildings.buildings.count(0)-len(buildings.build_timer),
-            buildings.buildings.count(0)),
+        text="<b>Здания </b>\n\n"
+             "<i>Прокачивайте здания,\n"
+             "для более высокой\n"
+             "производительности.</i>",
         reply_markup=keyboard
     )
 
-    await state.update_data({
-        "user_id": user_id,
+    session.close_session()
+
+    await state.set_data({
         "buildings_msg": buildings_msg
     })
+    await states.Buildings.menu.set()
 
-    session.close()
 
-
-@dp.callback_query_handler(regexp=BuildingsRegexp.back)
-async def buildings_back_handler(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query_handler(state=states.Buildings.menu)
+async def buildings_handler(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = callback.from_user.id
-    buildings_msg: types.Message = data.get("buildings_msg")
 
-    if data.get("user_id") != user_id:
-        msg_text = read_txt_file("text/hints/foreign_button")
-        return await callback.answer(msg_text)
+    buildings_msg = data.get("buildings_msg")
+
+    session = db_api.Session(user_id=user_id)
+    session.open_session()
+
+    # tables data
+    townhall_table: tables.TownHall = session.built_in_query(tables.TownHall)
+    citizens_table: tables.Citizens = session.built_in_query(tables.Citizens)
+
+    age = townhall_table.age
+
+    # model of age
+    age_model: models.Age = ages_list.AgesList.get_age_model(age)
+
+    keyboard = kb_constructor.StandardKeyboard(
+        user_id=user_id
+    )
+
+    type_buildings = re.findall(r"(\w+)_buildings", callback.data)
+
+    if callback.data == "home_buildings":
+        keyboard = keyboard.create_homes_keyboard()
+
+        msg_text = read_txt_file("text/buildings/homes")
+
+        await buildings_msg.edit_text(
+            text=msg_text.format(
+                citizens_table.population,
+                citizens_table.capacity,
+                age_model.home_building.name,
+                citizens_table.home_counts,
+            ),
+            reply_markup=keyboard
+        )
+        await states.Buildings.home_buildings.set()
+
+    elif type_buildings:
+        type_building = str(type_buildings[0])
+
+        if type_building == "food":
+            some_buildings_table: tables.FoodBuildings = session.built_in_query(
+                tables.FoodBuildings
+            )
+
+            building_model = age_model.food_building
+            keyboard = keyboard.create_some_buildings_keyboard(
+                table_model=tables.FoodBuildings,
+                building_model=building_model
+            )
+            emoji = "🍇"
+
+        elif type_building == "stock":
+            some_buildings_table: tables.StockBuildings = session.built_in_query(
+                tables.StockBuildings
+            )
+            building_model = age_model.stock_building
+            keyboard = keyboard.create_some_buildings_keyboard(
+                table_model=tables.StockBuildings,
+                building_model=building_model
+            )
+            emoji = "🌲"
+
+        else:
+            some_buildings_table = None
+            building_model = None
+            emoji = None
+
+        if building_model is None:
+            session.close_session()
+
+            return await callback.answer(
+                text="Слишком маленький век.",
+                show_alert=True
+            )
+
+        msg_text = read_txt_file("text/buildings/about_buildings")
+        efficiency = building_model.get_all_efficiency(some_buildings_table)
+        some_buildings_msg = await buildings_msg.edit_text(
+            text=msg_text.format(
+                building_model.name,
+                emoji, efficiency,
+                some_buildings_table.count_buildings
+            ),
+            reply_markup=keyboard
+        )
+
+        await state.update_data({
+            "building_model": building_model,
+            "type_building": type_building,
+            "some_buildings_msg": some_buildings_msg,
+        })
+        await states.Buildings.some_buildings.set()
+
+    session.close_session()
+    await callback.answer("")
+
+
+@dp.callback_query_handler(state=states.Buildings.home_buildings)
+async def home_buildings_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
 
     if callback.data == "back_buildings":
-        keyboard = kb_constructor.PaginationKeyboard(
-            user_id=user_id).create_buildings_keyboard()
-        await buildings_msg.edit_text(
-            text=buildings_msg.html_text,
-            reply_markup=keyboard,
+        await data["buildings_msg"].edit_text(
+            text=data["buildings_msg"].html_text,
+            reply_markup=data["buildings_msg"].reply_markup,
         )
-    await callback.answer()
+        await states.Buildings.menu.set()
+        return
 
-
-@dp.callback_query_handler(regexp=BuildingsRegexp.menu)
-async def buildings_menu_handler(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
     user_id = callback.from_user.id
-    buildings_msg: types.Message = data.get("buildings_msg")
+    add_home = re.findall(r"add_home_(\d+)", callback.data)
 
-    if data.get("user_id") != user_id:
-        msg_text = read_txt_file("text/hints/foreign_button")
-        return await callback.answer(msg_text)
+    session = db_api.Session(user_id=user_id)
 
-    session = db_api.CreateSession()
+    if add_home:
+        session.open_session()
 
-    townhall: tables.TownHall = session.filter_by_user_id(
-        user_id=user_id, table=tables.TownHall)
+        # table_data
+        townhall_table: tables.TownHall = session.built_in_query(tables.TownHall)
+        citizens_table: tables.Citizens = session.built_in_query(tables.Citizens)
 
-    buildings: tables.Buildings = session.db.query(
-        tables.Buildings).filter_by(user_id=user_id).first()
+        # age model
+        age_model = ages_list.AgesList.get_age_model(townhall_table.age)
 
-    page_move = re.findall(r"building_page_(\d+)", callback.data)
-    building_pos = re.findall(r"building_pos_(\d+)", callback.data)
-    build_info = re.findall(r"build_info_(\d+)", callback.data)
+        building_model = age_model.home_building
+        create_price = building_model.create_price
 
-    base_buildings: typing.List[typing.Union[
-        base.BuilderHome, base.StockBuilding, base.ClanBuilding,
-        base.ManufactureBuilding, base.HomeBuilding
-    ]] = ages.Age.get_all_buildings()
+        if townhall_table.money >= create_price:
+            time_left = timer.Timer.get_left_time(citizens_table.build_timer)
 
-    if page_move:
-        page = int(page_move[0])
+            if time_left[0] > 0:
+                session.close_session()
+                return await callback.answer(
+                    text="уже идет стройка",
+                )
 
-        keyboard = kb_constructor.PaginationKeyboard(
-            user_id=user_id).create_buildings_keyboard(page)
-        try:
-            await buildings_msg.edit_reply_markup(
-                reply_markup=keyboard
+            townhall_table.money -= create_price
+            citizens_table.build_num = citizens_table.home_counts+1
+            timer.Timer.set_build_timer(citizens_table, building_model)
+
+            await data["buildings_msg"].edit_text(
+                text=data["buildings_msg"].html_text,
+                reply_markup=data["buildings_msg"].reply_markup,
             )
-        except exceptions.MessageNotModified:
-            pass
-
-    elif building_pos:
-        position = int(building_pos[0])
-
-        await state.update_data({
-            "build_pos": position
-        })
-
-        if buildings.buildings[position] is None:
-
-            keyboard = kb_constructor.PaginationKeyboard(
-                user_id=user_id).create_unlocked_buildings_keyboard()
-
-            await buildings_msg.edit_text(
-                text="Постройка здания\n",
-                reply_markup=keyboard
-            )
+            await states.Buildings.menu.set()
         else:
-            building = base_buildings[buildings.buildings[position]]
-            name = building.name
-
-            if type(building) is base.ManufactureBuilding:
-                text = ""
-                for i in building.products:
-                    text += "<i>- {}</i>\n".format(i.name)
-                msg_text = read_txt_file("text/buildings/manufacture_building")
-                await buildings_msg.edit_text(
-                    text=msg_text.format(name, building, text),
-                    reply_markup=keyboards.buildings.kb_back
-                )
-            elif type(building) is base.StockBuilding:
-                msg_text = read_txt_file("text/buildings/stock_building")
-                await buildings_msg.edit_text(
-                    text=msg_text.format(name, building, building.efficiency),
-                    reply_markup=keyboards.buildings.kb_back
-                )
-
-            elif type(building) is base.HomeBuilding:
-                msg_text = read_txt_file("text/buildings/home_building")
-                await buildings_msg.edit_text(
-                    text=msg_text.format(name, building, building.capacity, building.income),
-                    reply_markup=keyboards.buildings.kb_back
-                )
-
-            elif type(building) is base.BuilderHome:
-                msg_text = read_txt_file("text/buildings/builder_home")
-                await buildings_msg.edit_text(
-                    text=msg_text.format(name, building),
-                    reply_markup=keyboards.buildings.kb_back
-                )
-
-            elif type(building) is base.ClanBuilding:
-                if buildings.clan_building_lvl == 0:
-                    msg_text = read_txt_file("text/buildings/clan_destroy")
-                    await buildings_msg.edit_text(
-                        text=msg_text,
-                        reply_markup=keyboards.buildings.kb_fix_clan_building
-                    )
-
-                elif buildings.clan_building_lvl > 0:
-                    msg_text = read_txt_file("text/buildings/clan_not_destroy")
-                    keyboard = kb_constructor.StandardKeyboard(
-                        user_id=user_id).create_upgrade_clan_keyboard()
-                    await buildings_msg.edit_text(
-                        text=msg_text.format(
-                            buildings.clan_building_lvl,
-                            clan_building.clan_building.capacity * buildings.clan_building_lvl
-                        ),
-                        reply_markup=keyboard
-                    )
-            else:
-                msg_text = read_txt_file("text/buildings/builder_home")
-                await buildings_msg.edit_text(
-                    text=msg_text.format(name),
-                    reply_markup=keyboards.buildings.kb_back
-                )
-
-    elif build_info:
-        build_num = int(build_info[0])
-
-        if data.get("build_pos") is None:
-            return
-
-        building = base_buildings[build_num]
-        build_time = timer.Timer.get_left_time_min(building.create_time_sec)
-        build_price = transaction.Purchase.get_price(building.create_price)
-
-        if type(building) is base.ManufactureBuilding:
-            text = ""
-            for i in building.products:
-                if building.products.index(i) == len(building.products)-1:
-                    text += "<i>{}</i>".format(i.name)
-                    break
-                text += "<i>{} / </i>".format(i.name)
-
-            msg_text = read_txt_file("text/buildings/pre_build_manufacture")
-            await buildings_msg.edit_text(
-                text=msg_text.format(
-                    building.name, building, text, build_price, building.manpower, *build_time),
-                reply_markup=keyboards.buildings.kb_build_info)
-
-        elif type(building) is base.StockBuilding:
-            msg_text = read_txt_file("text/buildings/pre_build_stock")
-            await buildings_msg.edit_text(
-                text=msg_text.format(
-                    building.name, building, building.efficiency, build_price, building.manpower, *build_time),
-                reply_markup=keyboards.buildings.kb_build_info)
-
-        elif type(building) is base.HomeBuilding:
-            msg_text = read_txt_file("text/buildings/pre_build_home")
-            await buildings_msg.edit_text(
-                text=msg_text.format(
-                    building.name, building, building.capacity, building.income, build_price, *build_time),
-                reply_markup=keyboards.buildings.kb_build_info)
-        else:
-            create_price = building.create_price
-            if type(building) is base.BuilderHome:
-                create_price = [i*buildings.buildings.count(0) for i in create_price]
-
-            create_price = transaction.Purchase.get_price(create_price)
-            msg_text = read_txt_file("text/buildings/pre_build")
-            await buildings_msg.edit_text(
-                text=msg_text.format(
-                    building.name, building, create_price, *build_time),
-                reply_markup=keyboards.buildings.kb_build_info)
-
-        await state.update_data({
-            "build_num": build_num
-        })
-
-    elif callback.data == "start_build":
-        if data.get("build_pos") is None:
-            await callback.answer()
-            session.close()
-            return
-        elif data.get("build_num") is None:
-            await callback.answer()
-            session.close()
-            return
-
-        build_num = int(data.get("build_num"))
-        build_pos = int(data.get("build_pos"))
-        building = base_buildings[build_num]
-        create_price = building.create_price
-        if type(building) is base.BuilderHome:
-            create_price *= buildings.buildings.count(0)
-
-        buying = transaction.Purchase.buy(
-            price=create_price,
-            townhall=townhall
-        )
-
-        if not buying:
-            price = transaction.Purchase.get_dynamic_price(
-                price=create_price,
-                townhall=townhall
-            )
-            msg_text = read_txt_file("text/hints/few_money")
+            msg_text = read_txt_file("text/hints/price")
             await callback.answer(
-                text=msg_text.format(price)
+                text=msg_text.format(create_price)+" 💰"
             )
-            session.close()
-            return
-        if type(base_buildings[build_num]) in (base.StockBuilding, base.ManufactureBuilding):
-            if townhall.population >= base_buildings[build_num].manpower:
-                townhall.population -= base_buildings[build_num].manpower
-            else:
-                manpower = base_buildings[build_num].manpower
-                await callback.answer(
-                    text="Вам не хватает x{} 👨🏼‍🌾 Жителей".format(
-                        manpower - townhall.population
-                    )
-                )
-                session.close()
-                return
 
-        build_timer = list(buildings.build_timer)
-        build_timer.append(
-            {"timer": timer.Timer.set_timer(base_buildings[build_num].create_time_sec),
-             "build_num": build_num,
-             "build_pos": build_pos
-             }
+        session.close_session()
+        await callback.answer()
+
+    elif callback.data == "build_done":
+        msg_text = read_txt_file("text/hints/build_done")
+        await callback.answer(
+            text=msg_text,
+        )
+    elif callback.data == "home_build_time":
+        citizens_table = session.quick_session(tables.Citizens)
+
+        time_left = timer.Timer.get_left_time(citizens_table.build_timer)
+        await callback.answer(
+            text="⏱ Осталось: {} {}".format(*time_left),
+            cache_time=1
         )
 
-        if buildings.buildings.count(0) > len(buildings.build_timer):
-            buildings.build_timer = build_timer
-            session.db.commit()
+    else:
+        people_dialogs = [
+            "а? кто там?", "пенсия наверно пришла",
+            "не стучите! я занят!", "мам, там кто-то стучит!",
+            "интересно, а что если я в игре?",
+            "ёлки-палки, опять штраф что-ли", "*тишина*",
+            "Гарри, это ты?", "хмм, кому я вдруг понадобился"
+        ]
+        random_dialog = random.choice(people_dialogs)
+        random_dialog = "💭 {}".format(random_dialog)
 
-            keyboard = kb_constructor.PaginationKeyboard(
-                user_id=user_id).create_buildings_keyboard()
-            msg_text = read_txt_file("text/buildings/buildings")
-            await buildings_msg.edit_text(
-                text=msg_text.format(
-                    buildings.buildings.count(0) - len(buildings.build_timer),
-                    buildings.buildings.count(0)),
-                reply_markup=keyboard
-            )
-
-        else:
-            await callback.answer("Все строители заняты.")
-
-    await callback.answer()
-    session.close()
-
-
-@dp.callback_query_handler(regexp=BuildingsRegexp.clan_building)
-async def clan_building_handler(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    user_id = callback.from_user.id
-    buildings_msg: types.Message = data.get("buildings_msg")
-
-    if data.get("user_id") != user_id:
-        msg_text = read_txt_file("text/hints/foreign_button")
-        return await callback.answer(msg_text)
-
-    session = db_api.CreateSession()
-
-    townhall: tables.TownHall = session.filter_by_user_id(
-        user_id=user_id, table=tables.TownHall)
-
-    buildings: tables.Buildings = session.db.query(
-        tables.Buildings).filter_by(user_id=user_id).first()
-
-    if callback.data == "fix_clan_building":
-        buying = transaction.Purchase.buy(
-            price=clan_building.clan_building.fix_price, townhall=townhall
+        await callback.answer(
+            text=random_dialog,
+            cache_time=1
         )
 
-        if buying:
-            buildings.clan_building_lvl = 1
 
-            await buildings_msg.edit_text(
-                text=buildings_msg.html_text,
-                reply_markup=buildings_msg.reply_markup,
-            )
-            await callback.answer("🔨 Клановая крепость построена.")
-        else:
-            fix_price = transaction.Purchase.get_dynamic_price(
-                price=clan_building.clan_building.fix_price, townhall=townhall
-            )
-            await callback.answer("Вам не хватает {}".format(fix_price))
+@dp.callback_query_handler(state=states.Buildings.some_buildings)
+async def some_buildings_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
 
-    elif callback.data == "upgrade_clan_building":
-        upgrade_price = [i*buildings.clan_building_lvl for i in clan_building.clan_building.upgrade_price]
-        buying = transaction.Purchase.buy(
-            price=upgrade_price, townhall=townhall
+    if callback.data == "back_buildings":
+        await data["buildings_msg"].edit_text(
+            text=data["buildings_msg"].html_text,
+            reply_markup=data["buildings_msg"].reply_markup,
         )
+        await states.Buildings.menu.set()
+        return
 
-        if buying:
-            buildings.clan_building_lvl += 1
-            await buildings_msg.edit_text(
-                text=buildings_msg.html_text,
-                reply_markup=buildings_msg.reply_markup,
-            )
-            await callback.answer("🔨 Клановая крепость улучшена.")
-        else:
-            upgrade_price = transaction.Purchase.get_dynamic_price(
-                price=upgrade_price, townhall=townhall
-            )
-
-            await callback.answer("Вам не хватает {}".format(upgrade_price))
-
-    await callback.answer()
-    session.close()
-
-
-@dp.callback_query_handler(regexp=BuildingsRegexp.unlocked_buildings)
-async def list_unlocked_buildings_handler(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
     user_id = callback.from_user.id
-    buildings_msg: types.Message = data.get("buildings_msg")
+    buildings_msg = data.get("buildings_msg")
+    type_building = data.get("type_building")
+    building_model = data.get("building_model")
 
-    if data.get("user_id") != user_id:
-        msg_text = read_txt_file("text/hints/foreign_button")
-        return await callback.answer(msg_text)
+    session = db_api.Session(user_id=user_id)
+    session.open_session()
 
-    page_move = re.findall(r"unlocked_buildings_page_(\d+)", callback.data)
+    # tables data
+    townhall_table: tables.TownHall = session.built_in_query(tables.TownHall)
+    age = townhall_table.age
 
-    if page_move:
-        page = int(page_move[0])
-        keyboard = kb_constructor.PaginationKeyboard(
-            user_id=user_id).create_unlocked_buildings_keyboard(page)
+    selected_building = re.findall(r"check_{}_building_(\d)".format(type_building), callback.data)
+    add_building = re.findall(r"add_{}_building_(\d)".format(type_building), callback.data)
 
-        try:
-            await buildings_msg.edit_reply_markup(
-                reply_markup=keyboard
-            )
-        except exceptions.MessageNotModified:
-            pass
+    if type_building == "food":
+        some_buildings: tables.FoodBuildings = session.built_in_query(tables.FoodBuildings)
+        emoji = "🍇"
+    else:
+        some_buildings: tables.StockBuildings = session.built_in_query(tables.StockBuildings)
+        emoji = "🌲"
 
-    await callback.answer()
+    if selected_building:
+        num_building = int(selected_building[0])
 
+        # model of age
+        levels = list(some_buildings.levels)
 
-@dp.callback_query_handler(regexp=BuildingsRegexp.tree)
-async def obstacles_handler(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    user_id = callback.from_user.id
-
-    buildings_msg: types.Message = data.get("buildings_msg")
-
-    if data.get("user_id") != user_id:
-        msg_text = read_txt_file("text/hints/foreign_button")
-        return await callback.answer(msg_text)
-
-    session = db_api.CreateSession()
-
-    buildings: tables.Buildings = session.db.query(
-        tables.Buildings).filter_by(user_id=user_id).first()
-
-    tree_pos = re.findall(r"tree_pos_(\d+)", callback.data)
-
-    if tree_pos:
-        pos = int(tree_pos[0])
+        msg_text = read_txt_file("text/buildings/about_building")
         await buildings_msg.edit_text(
-            text="🌲 Дерево\n"
-                 "<i>Просто деревцо, срубив\n"
-                 "которое вы получите место\n"
-                 "для новой постройки.</i>",
-            reply_markup=keyboards.buildings.kb_tree
+            text=msg_text.format(
+                building_model.name,
+                levels[num_building],
+                emoji,
+                building_model.get_hour_efficiency(levels[num_building])
+            ),
+            reply_markup=keyboards.buildings.kb_about_building
         )
+
         await state.update_data({
-            "tree_pos": pos
+            "num_building": num_building,
         })
+        await states.Buildings.about_building.set()
 
-    elif callback.data == "cut_down":
-        if data.get("tree_pos") is None:
-            session.close()
-            return
-        crnt_buildings = list(buildings.buildings)
-        build_timer = list(buildings.build_timer)
-        cut_down_time = random.randint(360, 1380)
+    elif add_building:
+        num_building = int(add_building[0])
 
-        build_timer.append(
-            {"timer": timer.Timer.set_timer(cut_down_time),
-             "build_pos": data.get("tree_pos")
-             })
+        create_price = building_model.create_price
 
-        if buildings.buildings.count(0) > len(buildings.build_timer):
-            buildings.build_timer = build_timer
-            session.db.commit()
+        if townhall_table.money >= create_price:
+            time_left_build = timer.Timer.get_left_time(some_buildings.build_timer)
 
-            keyboard = kb_constructor.PaginationKeyboard(
-                user_id=user_id).create_buildings_keyboard()
+            if time_left_build[0] > 0:
+                session.close_session()
+                return await callback.answer(
+                    text="уже идет стройка",
+                )
 
-            msg_text = read_txt_file("text/buildings/buildings")
-            await buildings_msg.edit_text(
-                text=msg_text.format(
-                    buildings.buildings.count(0) - len(buildings.build_timer),
-                    buildings.buildings.count(0)),
-                reply_markup=keyboard
+            townhall_table.money -= create_price
+
+            some_buildings.build_num = some_buildings.count_buildings
+            timer.Timer.set_build_timer(some_buildings, building_model)
+            some_buildings.count_buildings += 1
+
+            await data["buildings_msg"].edit_text(
+                text=data["buildings_msg"].html_text,
+                reply_markup=data["buildings_msg"].reply_markup,
             )
+            await states.Buildings.menu.set()
+        else:
+            msg_text = read_txt_file("text/hints/price")
+            await callback.answer(
+                text=msg_text.format(create_price)+" 💰"
+            )
+    elif callback.data == "build_done":
+        msg_text = read_txt_file("text/hints/build_done")
+        await callback.answer(
+            text=msg_text,
+        )
+
+    session.close_session()
+    await callback.answer("")
+
+
+@dp.callback_query_handler(state=states.Buildings.about_building)
+async def about_building_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+
+    if callback.data == "back_some_buildings":
+        await data["buildings_msg"].edit_text(
+            text=data["some_buildings_msg"].html_text,
+            reply_markup=data["some_buildings_msg"].reply_markup,
+        )
+        await states.Buildings.some_buildings.set()
+        return
+
+    user_id = callback.from_user.id
+
+    if callback.data == "upgrade_building":
+        session = db_api.Session(user_id=user_id)
+        session.open_session()
+
+        num_building: int = data.get("num_building")
+        building_model: models.Building = data.get("building_model")
+        type_building: str = data.get("type_building")
+
+        townhall_table: tables.TownHall = session.built_in_query(tables.TownHall)
+
+        if type_building == "food":
+            some_buildings: tables.FoodBuildings = session.built_in_query(tables.FoodBuildings)
+        else:
+            some_buildings: tables.StockBuildings = session.built_in_query(tables.StockBuildings)
+
+        levels = list(some_buildings.levels)
+        current_building_lvl = levels[num_building]
+
+        if current_building_lvl == 5:
+            msg_text = read_txt_file("text/hints/max_lvl")
+            await callback.answer(
+                text=msg_text
+            )
+            session.close_session()
+            return
+
+        upgrade_price = building_model.upgrade_price
+
+        if townhall_table.money >= upgrade_price:
+            time_left_build = timer.Timer.get_left_time(some_buildings.build_timer)
+
+            if time_left_build[0] > 0:
+                session.close_session()
+                return await callback.answer(
+                    text="уже идет стройка",
+                )
+
+            townhall_table.money -= upgrade_price
+            some_buildings.build_num = some_buildings.count_buildings-1
+
+            set_time = timer.Timer.set_timer(building_model.upgrade_time_sec)
+            some_buildings.build_timer = set_time
+
+            await data["buildings_msg"].edit_text(
+                text=data["buildings_msg"].html_text,
+                reply_markup=data["buildings_msg"].reply_markup,
+            )
+            await states.Buildings.menu.set()
 
         else:
-            await callback.answer("Все строители заняты.")
-            session.close()
-            return
+            msg_text = read_txt_file("text/hints/price")
+            await callback.answer(
+                text=msg_text.format(upgrade_price)+" 💰"
+            )
 
-        crnt_buildings[data.get("tree_pos")] = None
-        buildings.buildings = crnt_buildings
-
-    await callback.answer()
-    session.close()
+        session.close_session()

@@ -1,88 +1,74 @@
 import re
 import states
+import random
+import json
 
 from loader import dp
 
 from aiogram import types
 from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters import IsReplyFilter
 
 from utils.misc.read_file import read_txt_file
 from utils.classes import table_setter, kb_constructor
-from utils.models import ages, base
+from utils.ages import models, ages_list
 from utils.db_api import db_api, tables
 
+from data import config
 
-@dp.message_handler(IsReplyFilter(True), state=states.Reg.input_name_country)
+
+@dp.message_handler(IsReplyFilter(True), state=states.Reg.input_name_country, chat_id=config.ADMIN)
 @dp.throttled(rate=1)
 async def registration_handler(message: types.Message, middleware_data, state: FSMContext):
     user_id = message.from_user.id
     user_mention = message.from_user.get_mention()
 
     if message.reply_to_message.message_id == middleware_data:
-        result1 = re.findall(r"[a-zA-Z_а-яА-Я]+", message.text)
-        result2 = re.findall(r"[a-zA-Z_а-яА-Я0-9]+", message.text)[:1]
+        result1 = re.findall(r"[a-zA-Z_]+", message.text)
+        result2 = re.findall(r"[a-zA-Z_0-9]+", message.text)[:1]
 
         if not result1:
             return await message.reply(
                 "Попробуй ещё раз.\n\n"
                 "<i>Примеры: </i><code>NameCountry,\n"
-                "Name_Country, МояСтрана</code>"
+                "Name_Country</code>"
             )
 
         else:
             country_name = result2[0]
 
-            session = db_api.CreateSession()
+            session = db_api.Session(user_id=user_id)
+            session.open_session()
 
             new_table = table_setter.TableSetter(user_id=user_id)
             new_table.set_stone_age(message, country_name)
 
-            townhall: tables.TownHall = session.db.query(
-                tables.TownHall).filter_by(user_id=user_id).first()
-            buildings: tables.Buildings = session.db.query(
-                tables.Buildings).filter_by(user_id=user_id).first()
-            clan_member: tables.ClanMember = session.db.query(
-                tables.ClanMember).filter_by(user_id=user_id).join(tables.Clan).first()
+            townhall_table: tables.TownHall = session.built_in_query(tables.TownHall)
+            citizens_table: tables.Citizens = session.built_in_query(tables.Citizens)
+            age = townhall_table.age
 
-            age_model: base.Age = ages.Age.get(townhall.age)
+            # age model
+            age_model: models.Age = ages_list.AgesList.get_age_model(age)
 
-            await state.reset_state(with_data=False)
+            # keyboard
+            kb_townhall = kb_constructor.StandardKeyboard(user_id=user_id)
+            kb_townhall = kb_townhall.create_townhall_keyboard(age)
 
-            if clan_member is None:
-                msg_text = read_txt_file("text/townhall/townhall_none_clan")
-                user_clan = ""
-            else:
-                msg_text = read_txt_file("text/townhall/townhall_in_clan")
-                user_clan = "{}".format(
-                    clan_member.clan.name,
-                )
+            townhall_img = open(age_model.img, "rb")
+            await message.answer_sticker(sticker=townhall_img)
 
-            base_buildings = ages.Age.get_all_buildings()
-            all_population = 0
-            for building_num in buildings.buildings:
-                if type(building_num) is int:
-                    building = base_buildings[building_num]
-                    if type(building) is base.HomeBuilding:
-                        all_population += building.capacity
-
-            with open(age_model.townhall_img, 'rb') as sticker:
-                await message.answer_sticker(sticker=sticker)
-
-            keyboard = kb_constructor.StandardKeyboard(
-                user_id=user_id).create_townhall_keyboard()
-            townhall_msg = await message.answer(
+            msg_text = read_txt_file("text/townhall/townhall")
+            edit_msg = await message.answer(
                 text=msg_text.format(
-                    townhall.country_name,
-                    townhall.age,
-                    townhall.population,
-                    all_population,
-                    user_clan,
-                    user_mention),
-                reply_markup=keyboard
+                    townhall_table.country_name,
+                    citizens_table.population, citizens_table.capacity,
+                    townhall_table.age, age_model.rank, user_mention
+                ),
+                reply_markup=kb_townhall
             )
             await state.set_data({
-                "user_id": user_id,
-                "townhall_msg": townhall_msg,
+                "edit_msg": edit_msg,
             })
-            session.close()
+            await states.Townhall.menu.set()
+            session.close_session()

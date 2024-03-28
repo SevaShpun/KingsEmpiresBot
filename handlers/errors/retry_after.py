@@ -15,8 +15,8 @@ async def errors_handler(update, exception):
     # if isinstance(exception, exception.CantDemoteChatCreator):
     #     return True
     #
-    if isinstance(exception, exceptions.MessageNotModified):
-        return True
+    # if isinstance(exception, exception.MessageNotModified):
+    #     return True
     # if isinstance(exception, exception.MessageCantBeDeleted):
     #     return True
     #
@@ -35,7 +35,7 @@ async def errors_handler(update, exception):
     # # if isinstance(exception, exception.TelegramAPIError):
     #     return True
 
-    if isinstance(exception, exceptions.RetryAfter):
+    if isinstance(exception, exception.RetryAfter):
         return True
 
     # if isinstance(exception, exception.CantParseEntities):

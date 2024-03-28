@@ -6,3 +6,5 @@ class Buildings(StatesGroup):
     home_buildings = State()
     some_buildings = State()
     about_building = State()
+
+
